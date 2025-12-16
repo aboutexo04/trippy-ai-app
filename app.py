@@ -2,7 +2,9 @@ import streamlit as st
 from openai import OpenAI
 from duckduckgo_search import DDGS
 import requests
-
+import base64
+from PIL import Image
+import io
 # ==========================================
 # 1. 설정 및 API 연결 (st.set_page_config는 반드시 첫 번째!)
 # ==========================================
@@ -85,6 +87,114 @@ def analyze_safety_with_ai(client, location, news_results):
     return response.choices[0].message.content
 
 # ==========================================
+# 4. [기능] 영수증 OCR (OCR.space API)
+# ==========================================
+def compress_image(uploaded_file, max_size_kb=900):
+    """이미지를 압축해서 최대 크기 이하로 만듭니다."""
+    img = Image.open(uploaded_file)
+    
+    # RGBA를 RGB로 변환 (JPEG는 알파 채널 지원 안함)
+    if img.mode == 'RGBA':
+        img = img.convert('RGB')
+    
+    # 초기 품질
+    quality = 85
+    output = io.BytesIO()
+    
+    while quality > 10:
+        output.seek(0)
+        output.truncate()
+        img.save(output, format='JPEG', quality=quality)
+        size_kb = len(output.getvalue()) / 1024
+        
+        if size_kb <= max_size_kb:
+            break
+        
+        # 이미지 크기도 줄이기
+        if size_kb > max_size_kb * 2:
+            img = img.resize((int(img.width * 0.7), int(img.height * 0.7)), Image.Resampling.LANCZOS)
+        
+        quality -= 10
+    
+    output.seek(0)
+    return output.getvalue()
+
+def image_to_base64(uploaded_file, compress=True):
+    """업로드된 이미지를 base64로 변환합니다."""
+    if compress:
+        bytes_data = compress_image(uploaded_file)
+    else:
+        bytes_data = uploaded_file.getvalue()
+    return base64.b64encode(bytes_data).decode("utf-8")
+
+def extract_receipt_with_ocr(image_file):
+    """OCR.space API를 사용해 영수증 텍스트를 추출합니다."""
+    
+    # OCR.space API 키 (secrets.toml에서 가져오기)
+    try:
+        ocr_api_key = st.secrets["OCR_API_KEY"]
+    except:
+        return None, "OCR API 키가 없습니다. secrets.toml에 OCR_API_KEY를 추가해주세요."
+    
+    base64_image = image_to_base64(image_file)
+    
+    # OCR.space API 호출
+    url = "https://api.ocr.space/parse/image"
+    payload = {
+        "base64Image": f"data:image/jpeg;base64,{base64_image}",
+        "language": "kor",  # 한국어
+        "isOverlayRequired": False,
+        "detectOrientation": True,
+        "scale": True,
+        "OCREngine": 2  # 더 정확한 엔진
+    }
+    headers = {
+        "apikey": ocr_api_key
+    }
+    
+    try:
+        response = requests.post(url, data=payload, headers=headers)
+        result = response.json()
+        
+        if result.get("IsErroredOnProcessing"):
+            return None, result.get("ErrorMessage", "OCR 처리 실패")
+        
+        # 텍스트 추출
+        parsed_results = result.get("ParsedResults", [])
+        if parsed_results:
+            ocr_text = parsed_results[0].get("ParsedText", "")
+            return ocr_text, None
+        
+        return None, "텍스트를 인식하지 못했습니다."
+    except Exception as e:
+        return None, f"API 호출 실패: {e}"
+
+def analyze_receipt_text(client, ocr_text):
+    """AI가 OCR 텍스트에서 메뉴와 금액을 추출합니다."""
+    prompt = f"""다음은 영수증 OCR 결과야:
+
+{ocr_text}
+
+위 영수증에서 주문한 음식/상품 이름과 총 금액을 찾아줘.
+
+중요:
+- 영수증에서 실제 주문한 메뉴/상품 이름을 그대로 적어줘
+- 한 메뉴가 여러 단어로 되어있으면 그대로 합쳐서 적어 (예: "대우 해산물 볶음쌀국수"는 하나의 메뉴명)
+- 수량, 가격이 아닌 메뉴 이름만 추출해
+- 총 금액은 "합계" 또는 "총액" 옆의 숫자를 찾아
+
+형식:
+메뉴: [메뉴 이름]
+금액: [총 금액]"""
+
+    response = client.chat.completions.create(
+        model="Qwen/Qwen2.5-72B-Instruct-Turbo",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200
+    )
+    return response.choices[0].message.content
+
+# ==========================================
 # 4. 화면 UI 구성
 # ==========================================
 col1, col2 = st.columns(2)
@@ -145,11 +255,50 @@ with tab1:
     st.subheader("영수증 추가")
     receipt_file = st.file_uploader("영수증 사진을 올려주세요", type=['png', 'jpg', 'jpeg'], key="receipt")
     
+    # OCR 인식 결과 저장용
+    if "ocr_menu" not in st.session_state:
+        st.session_state.ocr_menu = ""
+    if "ocr_amount" not in st.session_state:
+        st.session_state.ocr_amount = ""
+    
+    # AI 인식 버튼
+    if receipt_file:
+        st.image(receipt_file, caption="업로드된 영수증", width=250)
+        
+        if st.button("🤖 AI로 자동 인식", key="ocr_receipt"):
+            with st.spinner("영수증 분석 중..."):
+                try:
+                    # 1단계: OCR로 텍스트 추출
+                    ocr_text, error = extract_receipt_with_ocr(receipt_file)
+                    
+                    if error:
+                        st.error(f"OCR 실패: {error}")
+                    elif ocr_text:
+                        with st.expander("📝 OCR 원본 텍스트"):
+                            st.text(ocr_text)
+                        
+                        # 2단계: AI로 메뉴/금액 추출
+                        with st.spinner("AI 분석 중..."):
+                            ai_result = analyze_receipt_text(client, ocr_text)
+                            st.info(f"**인식 결과:**\n{ai_result}")
+                        
+                        # 결과 파싱
+                        lines = ai_result.strip().split("\n")
+                        for line in lines:
+                            if "메뉴:" in line or "메뉴 :" in line:
+                                st.session_state.ocr_menu = line.split(":", 1)[-1].strip()
+                            elif "금액:" in line or "금액 :" in line:
+                                st.session_state.ocr_amount = line.split(":", 1)[-1].strip()
+                        
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"인식 실패: {e}")
+    
     col_a, col_b = st.columns(2)
     with col_a:
-        receipt_desc = st.text_input("메뉴/항목", placeholder="예: 크루아상, 커피")
+        receipt_desc = st.text_input("메뉴/항목", value=st.session_state.ocr_menu, placeholder="예: 크루아상, 커피")
     with col_b:
-        receipt_amount = st.text_input("금액", placeholder="예: 15유로")
+        receipt_amount = st.text_input("금액", value=st.session_state.ocr_amount, placeholder="예: 15유로")
     
     if st.button("➕ 영수증 추가", key="add_receipt"):
         if receipt_file and receipt_desc:
@@ -158,6 +307,9 @@ with tab1:
                 "text": receipt_desc,
                 "amount": receipt_amount
             })
+            # OCR 결과 초기화
+            st.session_state.ocr_menu = ""
+            st.session_state.ocr_amount = ""
             st.success("✅ 영수증이 추가되었습니다!")
             st.rerun()
     
