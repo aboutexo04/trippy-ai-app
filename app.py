@@ -129,38 +129,139 @@ with col2:
 st.markdown("---")
 
 # ==========================================
-# 5. [기능] 영수증 인식 (Vision AI)
+# 5. [기능] 영수증 & 여행 사진 & 종합 여행기 (탭 3개)
 # ==========================================
-st.header("🧾 영수증 정리 & 여행기 작성")
 
-uploaded_file = st.file_uploader("영수증이나 여행 사진을 올려주세요", type=['png', 'jpg', 'jpeg'])
-receipt_text = ""
+# Session State 초기화 (데이터 저장용)
+if "receipts" not in st.session_state:
+    st.session_state.receipts = []  # [{image, text, amount}]
+if "photos" not in st.session_state:
+    st.session_state.photos = []    # [{image, caption}]
 
-if uploaded_file is not None:
-    st.image(uploaded_file, caption="업로드된 사진", width=200)
-    st.success("📸 사진 인식 완료! (Vision 모델 연결 대기 중)")
-    receipt_text = "크루아상 2개 10유로, 커피 5유로"  # 가짜 데이터
+tab1, tab2, tab3 = st.tabs(["🧾 영수증 정리", "📸 여행 사진", "📖 종합 여행기"])
 
-# ==========================================
-# 6. 여행기 생성
-# ==========================================
-if st.button("📝 여행기 자동 생성"):
-    with st.spinner("여행기 작성 중..."):
-        # 뉴스 정보 가져오기
-        news_results = get_safety_news(location)
-        news_summary = " | ".join([r.get('title', '') for r in news_results[:3]]) if news_results else "특별한 이슈 없음"
-        
-        final_prompt = f"""
-        위치: {location}
-        현지 뉴스: {news_summary}
-        영수증 내역: {receipt_text}
-        
-        위 정보를 바탕으로 감성적인 여행 일기를 써줘.
-        특히 안전 이슈에 대해 여행자가 안심할 수 있는 멘트를 포함해줘.
-        """
-        
-        response = client.chat.completions.create(
-            model="Qwen/Qwen2.5-72B-Instruct-Turbo",
-            messages=[{"role": "user", "content": final_prompt}]
-        )
-        st.markdown(response.choices[0].message.content)
+# ========== 탭1: 영수증 ==========
+with tab1:
+    st.subheader("영수증 추가")
+    receipt_file = st.file_uploader("영수증 사진을 올려주세요", type=['png', 'jpg', 'jpeg'], key="receipt")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        receipt_desc = st.text_input("메뉴/항목", placeholder="예: 크루아상, 커피")
+    with col_b:
+        receipt_amount = st.text_input("금액", placeholder="예: 15유로")
+    
+    if st.button("➕ 영수증 추가", key="add_receipt"):
+        if receipt_file and receipt_desc:
+            st.session_state.receipts.append({
+                "image": receipt_file,
+                "text": receipt_desc,
+                "amount": receipt_amount
+            })
+            st.success("✅ 영수증이 추가되었습니다!")
+            st.rerun()
+    
+    # 저장된 영수증 목록
+    if st.session_state.receipts:
+        st.markdown("---")
+        st.subheader(f"💰 저장된 영수증 ({len(st.session_state.receipts)}건)")
+        for i, r in enumerate(st.session_state.receipts):
+            with st.container():
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col1:
+                    st.image(r["image"], width=80)
+                with col2:
+                    st.write(f"**{r['text']}**")
+                    st.caption(f"💵 {r['amount']}")
+                with col3:
+                    if st.button("🗑️", key=f"del_receipt_{i}"):
+                        st.session_state.receipts.pop(i)
+                        st.rerun()
+
+# ========== 탭2: 여행 사진 ==========
+with tab2:
+    st.subheader("여행 사진 추가")
+    photo_file = st.file_uploader("여행 사진을 올려주세요", type=['png', 'jpg', 'jpeg'], key="photo")
+    photo_caption = st.text_input("사진 설명", placeholder="예: 에펠탑 앞에서 인증샷!")
+    
+    if st.button("➕ 사진 추가", key="add_photo"):
+        if photo_file:
+            st.session_state.photos.append({
+                "image": photo_file,
+                "caption": photo_caption or "여행 사진"
+            })
+            st.success("✅ 사진이 추가되었습니다!")
+            st.rerun()
+    
+    # 저장된 사진 목록
+    if st.session_state.photos:
+        st.markdown("---")
+        st.subheader(f"📸 저장된 사진 ({len(st.session_state.photos)}장)")
+        cols = st.columns(3)
+        for i, p in enumerate(st.session_state.photos):
+            with cols[i % 3]:
+                st.image(p["image"], caption=p["caption"], use_container_width=True)
+                if st.button("🗑️", key=f"del_photo_{i}"):
+                    st.session_state.photos.pop(i)
+                    st.rerun()
+
+# ========== 탭3: 종합 여행기 ==========
+with tab3:
+    st.subheader("📖 나의 여행기")
+    
+    # 현재 저장된 데이터 요약
+    st.info(f"📍 **{location}** | 📸 사진 {len(st.session_state.photos)}장 | 🧾 영수증 {len(st.session_state.receipts)}건")
+    
+    if st.button("✨ 종합 여행기 생성", key="generate_final", type="primary"):
+        if not st.session_state.photos and not st.session_state.receipts:
+            st.warning("사진이나 영수증을 먼저 추가해주세요!")
+        else:
+            with st.spinner("여행기 작성 중..."):
+                # 데이터 정리
+                photo_list = [f"- {p['caption']}" for p in st.session_state.photos]
+                receipt_list = [f"- {r['text']}: {r['amount']}" for r in st.session_state.receipts]
+                
+                total_spending = ", ".join([f"{r['text']} {r['amount']}" for r in st.session_state.receipts])
+                
+                final_prompt = f"""
+                여행지: {location}
+                
+                여행 사진들:
+                {chr(10).join(photo_list) if photo_list else "없음"}
+                
+                지출 내역:
+                {chr(10).join(receipt_list) if receipt_list else "없음"}
+                
+                위 정보를 바탕으로 감성적인 여행 일기를 작성해줘.
+                각 사진에 대한 짧은 설명과 함께, 지출 내역도 자연스럽게 포함해줘.
+                마지막에 총 지출 요약도 넣어줘.
+                """
+                
+                response = client.chat.completions.create(
+                    model="Qwen/Qwen2.5-72B-Instruct-Turbo",
+                    messages=[{"role": "user", "content": final_prompt}]
+                )
+                
+                # 결과 표시
+                st.markdown("---")
+                
+                # 사진과 함께 여행기 표시
+                for p in st.session_state.photos:
+                    st.image(p["image"], caption=p["caption"], width=400)
+                
+                st.markdown(response.choices[0].message.content)
+                
+                # 지출 요약
+                if st.session_state.receipts:
+                    st.markdown("---")
+                    st.subheader("💰 지출 요약")
+                    for r in st.session_state.receipts:
+                        st.write(f"• {r['text']}: **{r['amount']}**")
+    
+    # 초기화 버튼
+    if st.session_state.photos or st.session_state.receipts:
+        st.markdown("---")
+        if st.button("🗑️ 모두 초기화", key="reset_all"):
+            st.session_state.photos = []
+            st.session_state.receipts = []
+            st.rerun()
