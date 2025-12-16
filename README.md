@@ -6,6 +6,8 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
+<img width="741" height="436" alt="image" src="https://github.com/user-attachments/assets/5d642701-3c93-4026-9ced-54f3e392f0f1" />
+
 ## 📋 프로젝트 소개
 
 TrippyAI는 여행자를 위한 올인원 AI 어시스턴트입니다. 여행 중 영수증을 촬영하면 자동으로 지출을 정리하고, 사진의 시간/장소 정보를 추출하여 감성적인 여행기를 자동 생성합니다.
